@@ -4,6 +4,7 @@ import math
 import os
 import subprocess
 from typing import Iterable
+import uuid
 
 IGNORE_BOOLEAN = 'IGNORE_BOOLEAN'
 
@@ -25,6 +26,7 @@ class Slurm():
         # initialize parser
         self.namespace = Namespace()
         self.parser = argparse.ArgumentParser()
+        self.pre_process_cmds = []
 
         # add arguments into argparser
         for keys in read_simple_txt('arguments.txt'):
@@ -47,17 +49,24 @@ class Slurm():
 
     def __str__(self) -> str:
         '''Print the generated sbatch script.'''
-        return self.arguments()
+        return self.arguments() + "\n".join(self.pre_process_cmds)
 
     def __repr__(self) -> str:
         '''Print the argparse namespace.'''
-        return repr(vars(self.namespace))
+        slurm_repr = {
+            'sbatch_args' : repr(vars(self.namespace)),
+            'pre_process_cmds' : self.pre_process_cmds                        
+        }
+        return repr(slurm_repr)
 
     def _add_one_argument(self, key: str, value: str):
         '''Parse the given key-value pair (the argument is given in key).'''
         key, value = fmt_key(key), fmt_value(value)
         if value is not IGNORE_BOOLEAN:
             self.parser.parse_args([key, value], namespace=self.namespace)
+
+    def _add_one_cmd(self, cmd: str):
+        self.pre_process_cmds.append(cmd)
 
     def add_arguments(self, *args, **kwargs):
         '''Parse the given key-value pairs.
@@ -70,6 +79,12 @@ class Slurm():
         for key, value in kwargs.items():
             self._add_one_argument(key, value)
         return self
+    
+    def add_cmd(self, *args):
+        for cmd in args:
+            self._add_one_cmd(cmd)
+        return self
+
 
     @staticmethod
     def _valid_key(key: str) -> str:
@@ -87,17 +102,30 @@ class Slurm():
         script_cmd = '\n'.join((f'#!{shell}', '', *args, ''))
         return script_cmd
 
-    def srun(self, run_cmd: str, srun_cmd: str = 'srun') -> int:
+    def srun(self, run_cmd: str, srun_cmd: str = 'srun', location:str = '.') -> int:
         '''Run the srun command with all the (previously) set arguments and
         the provided command to in 'run_cmd'.
         '''
+        uuid_bash_script = str(uuid.uuid4())
+        bash_script = location + "/" + uuid_bash_script + ".sh"
         args = (
             f'--{self._valid_key(k)}={v}'
             for k, v in vars(self.namespace).items() if v is not None
         )
-        cmd = ' '.join((srun_cmd, *args, run_cmd))
+
+        with open(bash_script, 'w') as script:
+            script.write("\n".join(self.pre_process_cmds) + "\n" + run_cmd)
+
+        run_cmd = f'bash {bash_script}'
+        
+        cmd = ' '.join((srun_cmd, * args, run_cmd))
+
+        print('Slurm srun', cmd)
 
         result = subprocess.run(cmd, shell=True, check=True)
+
+        os.remove(bash_script)
+
         return result.returncode
 
     def sbatch(self, run_cmd: str, convert: bool = True, verbose: bool = True,
@@ -122,9 +150,11 @@ class Slurm():
         cmd = '\n'.join((
             sbatch_cmd + ' << EOF',
             self.arguments(shell),
+            "\n".join(self.pre_process_cmds),
             run_cmd.replace('$', '\\$') if convert else run_cmd,
             'EOF',
         ))
+      
         result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE)
         success_msg = 'Submitted batch job'
         stdout = result.stdout.decode('utf-8')
