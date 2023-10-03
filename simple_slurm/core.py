@@ -107,6 +107,8 @@ class Slurm():
         the provided command to in 'run_cmd'.
         '''
         uuid_bash_script = str(uuid.uuid4())
+        if not os.path.isdir(location):
+            os.mkdir(location)
         bash_script = location + "/" + uuid_bash_script + ".sh"
         args = (
             f'--{self._valid_key(k)}={v}'
@@ -120,11 +122,9 @@ class Slurm():
         
         cmd = ' '.join((srun_cmd, * args, run_cmd))
 
-        print('Slurm srun', cmd)
 
         result = subprocess.run(cmd, shell=True, check=True)
 
-        os.remove(bash_script)
 
         return result.returncode
 
@@ -150,7 +150,7 @@ class Slurm():
         cmd = '\n'.join((
             sbatch_cmd + ' << EOF',
             self.arguments(shell),
-            "\n".join(self.pre_process_cmds),
+            "\n".join([cmd.replace('$', '\\$') if convert else cmd for cmd in self.pre_process_cmds]),
             run_cmd.replace('$', '\\$') if convert else run_cmd,
             'EOF',
         ))
